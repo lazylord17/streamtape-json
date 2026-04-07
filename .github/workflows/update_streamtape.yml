@@ -1,0 +1,30 @@
+name: Update Streamtape JSON
+
+# Trigger every 30 minutes and manually
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  update-json:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Streamtape script
+        run: python fetch_and_upload.py
+        env:
+          STREAMTAPE_USERNAME: ${{ secrets.STREAMTAPE_USERNAME }}
+          STREAMTAPE_PASSWORD: ${{ secrets.STREAMTAPE_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
