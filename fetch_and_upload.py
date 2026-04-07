@@ -1,66 +1,79 @@
 import os
 import requests
 import json
-from base64 import b64encode
+import base64
+import time
 
-# --- Streamtape credentials ---
-API_USERNAME = os.environ["STREAMTAPE_USERNAME"]
-API_PASSWORD = os.environ["STREAMTAPE_PASSWORD"]
+# Environment variables
+USERNAME = os.getenv("STREAMTAPE_USERNAME")
+PASSWORD = os.getenv("STREAMTAPE_PASSWORD")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO = os.getenv("GITHUB_REPO")  # e.g., lazylord17/streamtape-json
 
-# --- GitHub details ---
-GITHUB_REPO = "lazylord17/streamtape-json"
-GITHUB_FILE_PATH = "streamtape_videos.json"  # path in repo
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+API_URL = f"https://api.streamtape.com/file/listfolder?login={USERNAME}&key={PASSWORD}"
+GITHUB_API = f"https://api.github.com/repos/{REPO}/contents/streamtape_videos.json"
+LOCAL_JSON = "/tmp/streamtape_videos.json"
 
-# --- Fetch root folder from Streamtape ---
-def fetch_root_folder():
-    url = "https://api.streamtape.com/file/listfolder"
-    params = {
-        "login": API_USERNAME,
-        "key": API_PASSWORD
-    }
-    response = requests.get(url, params=params, timeout=20)
-    data = response.json()
+MAX_RETRIES = 5
 
-    if data.get("status") != 200:
-        raise Exception(f"Streamtape API error: {data.get('msg')}")
+def fetch_videos():
+    retries = 0
+    while retries < MAX_RETRIES:
+        try:
+            response = requests.get(API_URL, timeout=20)
+            if response.status_code == 429:  # rate limit
+                print("Rate limit hit, waiting 5 sec...")
+                time.sleep(5)
+                retries += 1
+                continue
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") == 200:
+                return data["result"]
+            else:
+                print("API error:", data)
+                return {}
+        except Exception as e:
+            print("Error fetching videos:", e)
+            time.sleep(5)
+            retries += 1
+    raise Exception("Max retries exceeded fetching Streamtape videos")
 
-    # Only root folder
-    result = data.get("result", {})
-    folders = result.get("folders", [])
-    files = result.get("files", [])
-    return {"folders": folders, "files": files}
+def save_local_json(data):
+    with open(LOCAL_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- Update GitHub file ---
-def update_github_file(content: dict):
-    # Check if file exists and get its SHA
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    sha = None
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        sha = response.json()["sha"]
+def upload_to_github():
+    with open(LOCAL_JSON, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    # Encode in base64
+    content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
 
-    # Convert content to base64
-    encoded_content = b64encode(json.dumps(content, indent=2).encode()).decode()
+    # Check if file exists on GitHub
+    r = requests.get(GITHUB_API, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    sha = r.json().get("sha") if r.status_code == 200 else None
 
     payload = {
         "message": "Update Streamtape videos JSON",
-        "content": encoded_content,
+        "content": content_b64,
+        "branch": "main",
     }
     if sha:
         payload["sha"] = sha
 
-    r = requests.put(url, headers=headers, json=payload)
+    r = requests.put(
+        GITHUB_API,
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json=payload
+    )
     if r.status_code in [200, 201]:
-        print("GitHub file updated successfully!")
+        print("Uploaded JSON to GitHub successfully")
     else:
-        print("Failed to update GitHub file:", r.json())
+        print("Failed to upload JSON:", r.status_code, r.text)
 
 if __name__ == "__main__":
-    print("Fetching root folder from Streamtape...")
-    data = fetch_root_folder()
-    print(f"Fetched {len(data['files'])} files and {len(data['folders'])} folders.")
-
-    print("Updating GitHub repo...")
-    update_github_file(data)
+    print("Fetching all Streamtape videos...")
+    result = fetch_videos()
+    save_local_json(result)
+    upload_to_github()
